@@ -18,6 +18,7 @@ from threads.model_loader import ModelLoaderThread
 from threads.processing import ProcessingThread
 from threads.video_processing import VideoProcessingThread
 from widgets.params_group import GenerationParamsGroup
+from widgets.image_viewer import ImageViewer
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -26,9 +27,11 @@ class MainWindow(QMainWindow):
         self.processing_thread = None
         self.florence_model = None
         self.image_pil = None
+        self.cropped_image = None
         self.full_result_image = None
         self.video_processor = None
         self.video_thread = None
+        self.current_selection = None
         self.video_input_path = ""
         self.video_output_path = ""
 
@@ -167,7 +170,7 @@ class MainWindow(QMainWindow):
         image_display_layout.setSpacing(15)
         
         # Input Image
-        self.input_image = QLabel()
+        self.input_image = ImageViewer()
         self.input_image.setMinimumSize(600, 500)
         self.input_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.input_image.setStyleSheet("""
@@ -177,8 +180,8 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
             }
         """)
+        self.input_image.selectionMade.connect(self.on_image_selection)
         self.input_image.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.input_image.mousePressEvent = self.show_original_input_image
         image_display_layout.addWidget(self.input_image)
 
         # Output Image
@@ -272,9 +275,26 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setMaximumHeight(40)
         self.cancel_btn.setEnabled(False)
 
+        self.clear_selection_btn = QPushButton("🧹 Clear Selection")
+        self.clear_selection_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ff9800;
+                color: white;
+                font-weight: bold;
+                padding: 8px;
+                border-radius: 4px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #f57c00;
+            }
+        """)
+        self.clear_selection_btn.setMaximumHeight(40)
+
         button_layout.addWidget(self.run_btn)
         button_layout.addWidget(self.cancel_btn)
         button_layout.addWidget(self.save_btn)
+        button_layout.addWidget(self.clear_selection_btn)
         
         right_panel.addLayout(button_layout)
 
@@ -286,6 +306,8 @@ class MainWindow(QMainWindow):
         self.cancel_btn.clicked.connect(self.cancel_processing)
         self.video_input_btn.clicked.connect(self.select_video_file)
         self.process_video_btn.clicked.connect(self.start_video_processing)
+        self.clear_selection_btn.clicked.connect(self.clear_selection)
+
 
     def start_model_loading(self):
         if self.model_loader and self.model_loader.isRunning():
@@ -383,24 +405,15 @@ class MainWindow(QMainWindow):
                 self.image_pil = Image.fromarray(img_cv2)
                 h, w, _ = img_cv2.shape
                 
-                q_img = QImage(
-                    img_cv2.data, 
-                    w, 
-                    h, 
-                    img_cv2.strides[0], 
-                    QImage.Format.Format_RGB888
-                )
-                
-                pixmap = QPixmap.fromImage(q_img)
-                scaled_pixmap = pixmap.scaled(
-                    self.input_image.size(), 
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
-                
-                self.input_image.setPixmap(scaled_pixmap)
+                self.input_image.set_image(self.image_pil)
                 self.upload_info.setText(f"Loaded: {w}x{h} px")
                 self.log_message(f"Image loaded: {fname} ({w}x{h} px)")
+                
+                self.current_selection = None
+
+                self.clear_selection()
+                self.cropped_image = None
+
             else:
                 self.log_message("Error: Failed to load image")
 
@@ -422,6 +435,12 @@ class MainWindow(QMainWindow):
         selected_category = self.category_combo.currentText()
         task_tag = TASK_TAGS.get(selected_category, "<CAPTION>")
         
+        if self.current_selection:
+            x1, y1, x2, y2 = self.current_selection
+            self.cropped_image = None
+            self.cropped_image = self.image_pil.crop((x1, y1, x2, y2))
+            self.log_message(f"\nProcessing cropped region: {x1}, {y1}, {x2}, {y2}")
+        
         self.run_btn.setEnabled(False)
         self.run_btn.setText("Processing...")
         self.save_btn.setEnabled(False)
@@ -430,10 +449,15 @@ class MainWindow(QMainWindow):
         self.log_message("\n=== Starting Processing ===")
         self.log_message(f"Task: {selected_category}")
         self.log_message(f"Prompt: {prompt}")
-        
+        if self.current_selection:
+            self.log_message(f"Region: {self.current_selection}")
+            self.processing_image = self.cropped_image
+        else:
+            self.processing_image = self.image_pil
+
         self.processing_thread = ProcessingThread(
             model_wrapper=self.florence_model,
-            image_pil=self.image_pil,
+            image_pil=self.processing_image,
             task_tag=task_tag,
             prompt=prompt,
             params=params
@@ -481,7 +505,7 @@ class MainWindow(QMainWindow):
 
         if result['is_visual_task'] and 'processed_results' in result:
             annotated_img = self._visualize_results(
-                self.image_pil, 
+                self.processing_image, 
                 result['processed_results'], 
                 result['task_tag']
             )
@@ -760,3 +784,22 @@ class MainWindow(QMainWindow):
         else:
             self.log_message(f"\nVideo processing failed: {message}")
             self.video_progress.setValue(0)
+
+    def on_image_selection(self, x1, y1, x2, y2):
+        """Handle rectangle selection on input image"""
+        if x1 == x2 and y1 == y2:
+            return
+        
+        x1, x2 = min(x1, x2), max(x1, x2)
+        y1, y2 = min(y1, y2), max(y1, y2)
+        
+        selection_info = f"Selected area: [{x1}, {y1}, {x2}, {y2}] (W: {x2-x1}, H: {y2-y1})"
+        self.log_message(f"\n{selection_info}")
+
+        self.current_selection = (x1, y1, x2, y2)
+
+    def clear_selection(self):
+        self.input_image.clear_selection()
+        self.current_selection = None
+        self.cropped_image = None
+        self.log_message("\nSelection cleared")
