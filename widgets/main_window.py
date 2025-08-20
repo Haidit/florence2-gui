@@ -1,531 +1,23 @@
-import sys
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QLineEdit, QGroupBox, QScrollArea, QFileDialog,
-    QSpinBox, QDoubleSpinBox, QTextEdit, QCheckBox, QFormLayout, QProgressBar
+    QTextEdit, QFormLayout, QProgressBar, QApplication, QSpinBox
 )
 from PyQt6.QtGui import QPixmap, QImage
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 import cv2
 import torch
-from transformers import AutoProcessor, AutoModelForCausalLM, AutoConfig
 from PIL import Image, ImageDraw
 import numpy as np
-from collections import deque
 import os
-import time
 
-LOCAL_MODELS = {
-    "Florence-2-base": {
-        "path": "./models/florence-2-base",
-        "description": "Base version of Florence-2"
-    },
-    "Florence-2-large": {
-        "path": "./models/florence-2-large",
-        "description": "Large version of Florence-2"
-    }
-}
-
-VISUAL_TASKS = {
-    "<OD>": "Object Detection",
-    "<DENSE_REGION_CAPTION>": "Dense Region Caption",
-    "<REGION_PROPOSAL>": "Region Proposal",
-    "<CAPTION_TO_PHRASE_GROUNDING>": "Caption To Phrase Grounding",
-    "<REFERRING_EXPRESSION_SEGMENTATION>": "Referring Expression Segmentation",
-    "<REGION_TO_SEGMENTATION>": "Region to Segmentation",
-    "<OPEN_VOCABULARY_DETECTION>": "Open Vocabulary Detection",
-    "<OCR_WITH_REGION>": "OCR With Region"
-}
-
-TEXT_ONLY_TASKS = {
-    "<OCR>": "OCR",
-    "<CAPTION>": "Caption",
-    "<DETAILED_CAPTION>": "Detailed Caption",
-    "<REGION_TO_CATEGORY>": "Region To Category",
-    "<REGION_TO_DESCRIPTION>": "Region To Description",
-    "<REGION_TO_OCR>": "Region to OCR",
-    "<MORE_DETAILED_CAPTION>": "More Detailed Caption",
-}
-
-TASK_TAGS = {
-    "Object Detection": "<OD>",
-    "Dense Region Caption": "<DENSE_REGION_CAPTION>",
-    "Region Proposal": "<REGION_PROPOSAL>",
-    "Caption To Phrase Grounding": "<CAPTION_TO_PHRASE_GROUNDING>",
-    "Reffering Expression Segmentation": "<REFERRING_EXPRESSION_SEGMENTATION>",
-    "Region to Segmentation": "<REGION_TO_SEGMENTATION>",
-    "Open Vocabulary Detection": "<OPEN_VOCABULARY_DETECTION>",
-    "Region To Category": "<REGION_TO_CATEGORY>",
-    "Region To Description": "<REGION_TO_DESCRIPTION>",
-    "Region to OCR": "<REGION_TO_OCR>",
-    "OCR": "<OCR>",
-    "OCR With Region": "<OCR_WITH_REGION>",
-    "Caption": "<CAPTION>",
-    "Detailed Caption": "<DETAILED_CAPTION>",
-    "More Detailed Caption": "<MORE_DETAILED_CAPTION>"
-    }
-
-
-class Florence2ModelWrapper:
-    def __init__(self, model_data):
-        self.model = model_data['model']
-        self.processor = model_data['processor']
-        self.device = model_data['device']
-        self.torch_dtype = model_data['torch_dtype']
-        self.model.eval()
-        
-    def process_image(self, image_pil, task_tag, prompt, generation_params):
-        try:
-            if not prompt.startswith(task_tag):
-                prompt = f"{task_tag}{prompt}"
-            
-            inputs = self.processor(
-                text=prompt,
-                images=image_pil,
-                return_tensors="pt",
-                padding=True
-            ).to(self.device, self.torch_dtype)
-            
-            if self.torch_dtype == torch.float16:
-                inputs = {k: v.half() if v.is_floating_point() else v for k, v in inputs.items()}
-            elif self.torch_dtype == torch.bfloat16:
-                inputs = {k: v.bfloat16() if v.is_floating_point() else v for k, v in inputs.items()}
-            else:
-                inputs = {k: v.float() if v.is_floating_point() else v for k, v in inputs.items()}
-            
-            with torch.no_grad():
-                generated_ids = self.model.generate(
-                    input_ids=inputs["input_ids"],
-                    pixel_values=inputs["pixel_values"],
-                    use_cache=False,
-                    output_scores=True,
-                    min_new_tokens=generation_params.get('min_new_tokens', 512),
-                    max_new_tokens=generation_params.get('max_new_tokens', 512),
-                    num_beams=generation_params.get('num_beams', 1),
-                    temperature=generation_params.get('temperature', 1.0),
-                    top_k=generation_params.get('top_k', 50),
-                    top_p=generation_params.get('top_p', 0.9),
-                    early_stopping=generation_params.get('early_stopping', False),
-                    do_sample=generation_params.get('do_sample', False),
-                    no_repeat_ngram_size=generation_params.get('no_repeat_ngram_size', 0),
-                    length_penalty=generation_params.get('length_penalty', 1.0),
-                    repetition_penalty=generation_params.get('repetition_penalty', 1.0),
-                )
-            
-            generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-            
-            is_visual_task = task_tag in VISUAL_TASKS
-
-            if is_visual_task:
-                processed_results = self.processor.post_process_generation(
-                    generated_text,
-                    task=task_tag,
-                    image_size=image_pil.size
-                )
-                
-                mask_img = self._create_mask_image(processed_results, image_pil.size)
-                
-                return {
-                    'text': generated_text,
-                    'task_tag': task_tag,
-                    'is_visual_task': True,
-                    'processed_results': processed_results,
-                    'mask_image': mask_img,
-                    'success': True
-                }
-            return {
-                'text': generated_text.replace(task_tag, "").strip(),
-                'task_tag': task_tag,
-                'is_visual_task': False,
-                'success': True
-            }
-            
-        except Exception as e:
-            raise Exception(f"Processing error: {str(e)}")
-        
-    def _create_mask_image(self, processed_results, image_size):
-        mask = Image.new('L', image_size, 0)
-        draw = ImageDraw.Draw(mask)
-        
-        if not processed_results or not next(iter(processed_results.values())):
-            return mask
-        
-        result_data = next(iter(processed_results.values()))
-        
-        if 'bboxes' in result_data:
-            for bbox in result_data['bboxes']:
-                x1, y1, x2, y2 = map(int, bbox)
-                draw.rectangle([x1, y1, x2, y2], fill=255)
-        
-        if 'polygons' in result_data:
-            for polygon in result_data['polygons']:
-                try:
-                    flat_polygon = []
-                    for point in polygon:
-                        if isinstance(point, (list, tuple)):
-                            flat_polygon.extend(map(float, point))
-                        else:
-                            flat_polygon.append(float(point))
-                    
-                    if len(flat_polygon) >= 6:
-                        draw.polygon(flat_polygon, fill=255)
-                    else:
-                        print(f"Ignoring invalid polygon with {len(flat_polygon)//2} points")
-                except Exception as e:
-                    print(f"Error drawing polygon: {e}")
-                    continue
-        
-        return mask
-
-
-class BatchVideoProcessor:
-    def __init__(self, model_wrapper):
-        self.model_wrapper = model_wrapper
-        self.frame_buffer = deque()
-        self.original_frames = []
-        self.batch_size = 4 
-        self.frame_skip = 2 
-
-    def update_parameters(self, batch_size, frame_skip):
-        self.batch_size = batch_size
-        self.frame_skip = frame_skip
-        self.frame_buffer = deque(maxlen=batch_size)
-
-    def process_batch(self, task_tag, prompt, generation_params):
-        if not self.frame_buffer:
-            return []
-
-        try:
-            results = []
-            for img_pil in self.frame_buffer:
-                result = self.model_wrapper.process_image(
-                    image_pil=img_pil,
-                    task_tag=task_tag,
-                    prompt=prompt,
-                    generation_params=generation_params
-                )
-                
-                if result['success'] and result['is_visual_task']:
-                    results.append(result['processed_results'].get(task_tag, {}))
-                else:
-                    results.append({})
-            
-            return results
-        except Exception as e:
-            print(f"Ошибка обработки батча: {str(e)}")
-            return []
-
-    def process_video(self, input_path, output_path, task_tag, prompt, generation_params, progress_callback=None):
-        start_time = time.time()
-        cap = cv2.VideoCapture(input_path)
-        if not cap.isOpened():
-            raise IOError(f"Не удалось открыть видео: {input_path}")
-
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        fourcc = cv2.VideoWriter_fourcc(*'avc1')
-        out = cv2.VideoWriter(output_path, fourcc, fps/max(1, self.frame_skip), (width, height))
-
-        processed_frames = 0
-        frame_count = 0
-        self.frame_buffer.clear()
-        self.original_frames.clear()
-
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                if self.frame_buffer:
-                    results = self.process_batch(task_tag, prompt, generation_params)
-                    self._write_results(out, results)
-                    processed_frames += len(results)
-                    if progress_callback:
-                        progress = int((processed_frames / (total_frames/max(1, self.frame_skip)) * 100))
-                        progress_callback(progress)
-                break
-
-            frame_count += 1
-            
-            if self.frame_skip > 1 and frame_count % self.frame_skip != 0:
-                continue
-
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img_pil = Image.fromarray(frame_rgb)
-            
-            self.frame_buffer.append(img_pil)
-            self.original_frames.append(frame.copy())
-
-            if len(self.frame_buffer) >= self.batch_size:
-                results = self.process_batch(task_tag, prompt, generation_params)
-                self._write_results(out, results)
-                processed_frames += len(results)
-                if progress_callback:
-                    progress = int((processed_frames / (total_frames/max(1, self.frame_skip)) * 100))
-                    progress_callback(progress)
-                self.frame_buffer.clear()
-                self.original_frames.clear()
-
-        cap.release()
-        out.release()
-
-        processing_time = time.time() - start_time
-        return True, processing_time
-
-    def _write_results(self, out, results):
-        for i, result in enumerate(results):
-            if i >= len(self.original_frames):
-                continue
-                
-            frame = self.original_frames[i]
-            
-            if result and "bboxes" in result:
-                for j, bbox in enumerate(result["bboxes"]):
-                    x1, y1, x2, y2 = map(int, bbox)
-                    label = result.get("labels", [""])[j] if "labels" in result else ""
-                    
-                    color = (0, 255, 0)
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(frame, label, (x1, y1-10), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-            
-            out.write(frame)
-
-
-class ModelLoaderThread(QThread):
-    finished = pyqtSignal(object)  
-    error = pyqtSignal(str)       
-    progress = pyqtSignal(str)    
-
-    def __init__(self, model_path, attention_type, precision):
-        super().__init__()
-        self.model_path = model_path
-        self.attention_type = attention_type
-        self.precision = precision
-        self._is_running = True
-
-    def run(self):
-        try:
-            self.progress.emit("Initializing Florence-2 model...")
-            
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            
-            if self.precision == "fp16":
-                torch_dtype = torch.float16
-            elif self.precision == "bf16" and torch.cuda.is_bf16_supported():
-                torch_dtype = torch.bfloat16
-            else:
-                torch_dtype = torch.float32
-
-            self.progress.emit("Loading config...")
-            config = AutoConfig.from_pretrained(
-                self.model_path,
-                trust_remote_code=True,
-                attn_implementation=self.attention_type.lower()
-            )
-
-            self.progress.emit("Loading model weights...")
-            model = AutoModelForCausalLM.from_pretrained(
-                self.model_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=True,
-                config=config,
-                local_files_only=True
-            ).to(device)
-
-            self.progress.emit("Loading processor...")
-            processor = AutoProcessor.from_pretrained(
-                self.model_path,
-                trust_remote_code=True,
-                local_files_only=True
-            )
-
-            if self._is_running:
-                self.finished.emit({
-                    'model': model,
-                    'processor': processor,
-                    'device': device,
-                    'torch_dtype': torch_dtype
-                })
-
-        except Exception as e:
-            self.error.emit(f"Error loading model: {str(e)}")
-
-    def stop(self):
-        self._is_running = False
-        self.quit()
-
-
-class ProcessingThread(QThread):
-    finished = pyqtSignal(object)
-    error = pyqtSignal(str)
-    status = pyqtSignal(str) 
-
-    def __init__(self, model_wrapper, image_pil, task_tag, prompt, params):
-        super().__init__()
-        self.model_wrapper = model_wrapper
-        self.image_pil = image_pil
-        self.task_tag = task_tag
-        self.prompt = prompt
-        self.params = params
-        self._is_running = True
-
-    def run(self):
-        try:
-            self.status.emit("Starting image processing...")
-            
-            result = self.model_wrapper.process_image(
-                image_pil=self.image_pil,
-                task_tag=self.task_tag,
-                prompt=self.prompt,
-                generation_params=self.params
-            )
-            
-            if self._is_running:
-                self.finished.emit(result)
-                self.status.emit("Processing completed!")
-                
-        except Exception as e:
-            self.error.emit(f"Processing error: {str(e)}")
-
-    def stop(self):
-        self._is_running = False
-        self.quit()
-
-
-class VideoProcessingThread(QThread):
-    progress_updated = pyqtSignal(int)
-    finished_signal = pyqtSignal(bool, str, float)
-    
-    def __init__(self, processor, input_path, output_path, task_tag, prompt, generation_params):
-        super().__init__()
-        self.processor = processor
-        self.input_path = input_path
-        self.output_path = output_path
-        self.task_tag = task_tag
-        self.prompt = prompt
-        self.generation_params = generation_params
-        
-    def run(self):
-        try:
-            success, processing_time = self.processor.process_video(
-                self.input_path,
-                self.output_path,
-                self.task_tag,
-                self.prompt,
-                self.generation_params,
-                self.progress_updated.emit
-            )
-            self.finished_signal.emit(success, self.output_path, processing_time)
-        except Exception as e:
-            print(f"Ошибка обработки видео: {str(e)}")
-            self.finished_signal.emit(False, str(e), 0.0)
-
-
-class GenerationParamsGroup(QGroupBox):
-    def __init__(self):
-        super().__init__("Generation Parameters")
-        layout = QFormLayout()
-        layout.setVerticalSpacing(4)
-        layout.setHorizontalSpacing(10)
-        
-        self.max_new_tokens = QSpinBox()
-        self.max_new_tokens.setRange(1, 10000)
-        self.max_new_tokens.setValue(512)
-        layout.addRow("Max tokens:", self.max_new_tokens)
-
-        self.min_new_tokens = QSpinBox()
-        self.min_new_tokens.setRange(0, 10000)
-        self.min_new_tokens.setValue(0)
-        layout.addRow("Min tokens:", self.min_new_tokens)
-
-        self.num_beams = QSpinBox()
-        self.num_beams.setRange(1, 10)
-        self.num_beams.setValue(1)
-        layout.addRow("Num beams:", self.num_beams)
-
-        self.top_k = QSpinBox()
-        self.top_k.setRange(1, 1000)
-        self.top_k.setValue(50)
-        layout.addRow("Top-k:", self.top_k)
-
-        self.no_repeat_ngram_size = QSpinBox()
-        self.no_repeat_ngram_size.setRange(0, 10)
-        self.no_repeat_ngram_size.setValue(0)
-        layout.addRow("No repeat ngram:", self.no_repeat_ngram_size)
-
-        self.temperature = QDoubleSpinBox()
-        self.temperature.setRange(0.1, 5.0)
-        self.temperature.setValue(1.0)
-        self.temperature.setSingleStep(0.1)
-        layout.addRow("Temperature:", self.temperature)
-
-        self.top_p = QDoubleSpinBox()
-        self.top_p.setRange(0.0, 1.0)
-        self.top_p.setValue(0.9)
-        self.top_p.setSingleStep(0.05)
-        layout.addRow("Top-p:", self.top_p)
-
-        self.length_penalty = QDoubleSpinBox()
-        self.length_penalty.setRange(0.0, 2.0)
-        self.length_penalty.setValue(1.0)
-        self.length_penalty.setSingleStep(0.1)
-        layout.addRow("Length penalty:", self.length_penalty)
-
-        self.repetition_penalty = QDoubleSpinBox()
-        self.repetition_penalty.setRange(1.0, 2.0)
-        self.repetition_penalty.setValue(1.0)
-        self.repetition_penalty.setSingleStep(0.1)
-        layout.addRow("Repetition penalty:", self.repetition_penalty)
-
-        self.early_stopping = QCheckBox()
-        self.early_stopping.setChecked(False)
-        layout.addRow("Early stopping:", self.early_stopping)
-
-        self.do_sample = QCheckBox()
-        self.do_sample.setChecked(False)
-        layout.addRow("Do sample:", self.do_sample)
-
-        self.setLayout(layout)
-        
-        self.setStyleSheet("""
-            QGroupBox {
-                font-size: 11px;
-                border: 1px solid #ddd;
-                border-radius: 3px;
-                margin-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 7px;
-                padding: 0 3px;
-            }
-            QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit {
-                max-height: 22px;
-                font-size: 11px;
-            }
-            QCheckBox {
-                spacing: 5px;
-                font-size: 11px;
-            }
-        """)
-
-    def get_params(self):
-        return {
-            "max_new_tokens": self.max_new_tokens.value(),
-            "min_new_tokens": self.min_new_tokens.value(),
-            "num_beams": self.num_beams.value(),
-            "early_stopping": self.early_stopping.isChecked(),
-            "temperature": self.temperature.value(),
-            "top_k": self.top_k.value(),
-            "top_p": self.top_p.value(),
-            "no_repeat_ngram_size": self.no_repeat_ngram_size.value(),
-            "length_penalty": self.length_penalty.value(),
-            "repetition_penalty": self.repetition_penalty.value(),
-            "do_sample": self.do_sample.isChecked(),
-        }
-
+from config import LOCAL_MODELS, TASK_TAGS
+from core.model_wrapper import Florence2ModelWrapper
+from core.video_processor import BatchVideoProcessor
+from threads.model_loader import ModelLoaderThread
+from threads.processing import ProcessingThread
+from threads.video_processing import VideoProcessingThread
+from widgets.params_group import GenerationParamsGroup
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -593,23 +85,7 @@ class MainWindow(QMainWindow):
         request_layout.setVerticalSpacing(5)
         
         self.category_combo = QComboBox()
-        self.category_combo.addItems([
-                    "Object Detection",
-                    "Dense Region Caption",
-                    "Region Proposal",
-                    "Caption To Phrase Grounding",
-                    "Reffering Expression Segmentation",
-                    "Region to Segmentation",
-                    "Open Vocabulary Detection",
-                    "Region To Category",
-                    "Region To Description",
-                    "Region to OCR",
-                    "OCR",
-                    "OCR With Region",
-                    "Caption",
-                    "Detailed Caption",
-                    "More Detailed Caption",
-                    ])
+        self.category_combo.addItems(list(TASK_TAGS.keys()))
         
         self.prompt_input = QLineEdit()
         self.prompt_input.setPlaceholderText("Enter prompt...")
@@ -813,6 +289,25 @@ class MainWindow(QMainWindow):
 
     def start_model_loading(self):
         if self.model_loader and self.model_loader.isRunning():
+            self.log_message("\nStopping previous model loading...")
+            try:
+                self.model_loader.finished.disconnect()
+                self.model_loader.error.disconnect()
+                self.model_loader.progress.disconnect()
+            except:
+                pass
+            
+            self.model_loader.requestInterruption()
+            self.model_loader.quit() 
+            self.model_loader.wait(2000)
+            
+            if self.model_loader.isRunning():
+                self.log_message("Warning: Thread did not stop gracefully!")
+                self.model_loader.terminate()
+                self.model_loader.wait()
+            
+            self.model_loader = None
+
             self.model_loader.stop()
             
         model_name = self.model_combo.currentText()
@@ -839,13 +334,13 @@ class MainWindow(QMainWindow):
         self.log_message("Model successfully loaded!")
         self.load_model_btn.setEnabled(True)
         self.load_model_btn.setText("Load Model")
-        self.model_loader = None
+        # self.model_loader = None
 
     def on_model_error(self, error_msg):
         self.log_message(error_msg)
         self.load_model_btn.setEnabled(True)
         self.load_model_btn.setText("Load Model")
-        self.model_loader = None
+        # self.model_loader = None
            
     def closeEvent(self, event):
         if self.model_loader and self.model_loader.isRunning():
@@ -1265,30 +760,3 @@ class MainWindow(QMainWindow):
         else:
             self.log_message(f"\nVideo processing failed: {message}")
             self.video_progress.setValue(0)
-
-
-def excepthook(exc_type, exc_value, exc_tb):
-        import traceback
-        traceback.print_exception(exc_type, exc_value, exc_tb)
-        
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    sys.excepthook = excepthook
-    
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-    font = app.font()
-    font.setPointSize(9)
-    app.setFont(font)
-    
-    try:
-        window = MainWindow()
-        window.showMaximized()
-        sys.exit(app.exec())
-    finally:
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
