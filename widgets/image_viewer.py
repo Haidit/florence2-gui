@@ -12,8 +12,8 @@ class ImageViewer(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.original_pixmap = None
-        self.original_size = QRect()  # Original image size
-        self.display_rect = QRect()   # Actual displayed image area on screen
+        self.original_size = QRect()  
+        self.display_rect = QRect()
         self.scale_factor = 1.0
         
         self.selection_rect = QRect()
@@ -54,7 +54,6 @@ class ImageViewer(QLabel):
         if self.original_pixmap is None:
             return
             
-        # Calculate scaled size maintaining aspect ratio
         pixmap_size = self.original_pixmap.size()
         label_size = self.size()
         
@@ -65,13 +64,11 @@ class ImageViewer(QLabel):
             scaled_height = label_size.height()
             scaled_width = int(pixmap_size.width() * (scaled_height / pixmap_size.height()))
         
-        # Calculate display area (centered)
         x = (label_size.width() - scaled_width) // 2
         y = (label_size.height() - scaled_height) // 2
         
         self.display_rect = QRect(x, y, scaled_width, scaled_height)
         
-        # Calculate scale factors
         self.scale_x = scaled_width / pixmap_size.width()
         self.scale_y = scaled_height / pixmap_size.height()
     
@@ -82,23 +79,19 @@ class ImageViewer(QLabel):
         
         self.calculate_display_geometry()
         
-        # Scale the original pixmap
         scaled_pixmap = self.original_pixmap.scaled(
             self.display_rect.size(),
             Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.SmoothTransformation
         )
         
-        # Create final pixmap with correct size
         final_pixmap = QPixmap(self.size())
         final_pixmap.fill(Qt.GlobalColor.transparent)
         
         painter = QPainter(final_pixmap)
         
-        # Draw scaled image
         painter.drawPixmap(self.display_rect, scaled_pixmap)
         
-        # Draw selection rectangle if active
         if not self.selection_rect.isNull() or self.selection_coords:
             self.draw_selection(painter)
         
@@ -108,7 +101,6 @@ class ImageViewer(QLabel):
     def draw_selection(self, painter):
         """Draw selection rectangle with style"""
         if self.selection_coords:
-            # Convert original coordinates to display coordinates
             x1, y1, x2, y2 = self.selection_coords
             display_x1 = self.display_rect.x() + int(x1 * self.scale_x)
             display_y1 = self.display_rect.y() + int(y1 * self.scale_y)
@@ -120,10 +112,8 @@ class ImageViewer(QLabel):
                 display_x2 - display_x1, display_y2 - display_y1
             )
         else:
-            # Use current drag rectangle
             rect = self.selection_rect
         
-        # Draw selection
         fill_color = QColor(255, 0, 0, 40)
         painter.fillRect(rect, fill_color)
         
@@ -131,7 +121,6 @@ class ImageViewer(QLabel):
         painter.setPen(border_pen)
         painter.drawRect(rect)
         
-        # Draw corner handles
         handle_size = 6
         for corner in [rect.topLeft(), rect.topRight(), rect.bottomLeft(), rect.bottomRight()]:
             painter.fillRect(
@@ -141,7 +130,6 @@ class ImageViewer(QLabel):
                 QColor(255, 0, 0)
             )
         
-        # Draw coordinates
         if self.selection_coords:
             x1, y1, x2, y2 = self.selection_coords
             text = f"[{x1}, {y1}, {x2}, {y2}]"
@@ -181,20 +169,17 @@ class ImageViewer(QLabel):
             self.is_selecting = False
             
             if not self.selection_rect.isNull():
-                # Convert display coordinates to original image coordinates
                 img_x1, img_y1, img_x2, img_y2 = self.get_image_coordinates()
                 
-                # Ensure coordinates are within image bounds
                 img_x1 = max(0, min(img_x1, self.original_size.width() - 1))
                 img_y1 = max(0, min(img_y1, self.original_size.height() - 1))
                 img_x2 = max(0, min(img_x2, self.original_size.width() - 1))
                 img_y2 = max(0, min(img_y2, self.original_size.height() - 1))
                 
-                # Ensure proper ordering
                 img_x1, img_x2 = min(img_x1, img_x2), max(img_x1, img_x2)
                 img_y1, img_y2 = min(img_y1, img_y2), max(img_y1, img_y2)
                 
-                if img_x2 > img_x1 and img_y2 > img_y1:  # Valid selection
+                if img_x2 > img_x1 and img_y2 > img_y1:
                     self.selection_coords = (img_x1, img_y1, img_x2, img_y2)
                     self.selectionMade.emit(img_x1, img_y1, img_x2, img_y2)
             
@@ -203,7 +188,6 @@ class ImageViewer(QLabel):
     def update_selection_rect(self):
         """Update selection rectangle from start and end points"""
         if self.start_point and self.end_point:
-            # Constrain selection to image display area
             constrained_start = self.constrain_to_display(self.start_point)
             constrained_end = self.constrain_to_display(self.end_point)
             
@@ -220,7 +204,6 @@ class ImageViewer(QLabel):
         if not self.original_pixmap or self.selection_rect.isNull():
             return 0, 0, 0, 0
         
-        # Convert display coordinates to original coordinates
         x1 = int((self.selection_rect.left() - self.display_rect.x()) / self.scale_x)
         y1 = int((self.selection_rect.top() - self.display_rect.y()) / self.scale_y)
         x2 = int((self.selection_rect.right() - self.display_rect.x()) / self.scale_x)

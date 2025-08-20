@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QLineEdit, QGroupBox, QScrollArea, QFileDialog,
-    QTextEdit, QFormLayout, QProgressBar, QApplication, QSpinBox
+    QTextEdit, QFormLayout, QProgressBar, QApplication, QSpinBox, QRadioButton, QButtonGroup
 )
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -19,6 +19,7 @@ from threads.processing import ProcessingThread
 from threads.video_processing import VideoProcessingThread
 from widgets.params_group import GenerationParamsGroup
 from widgets.image_viewer import ImageViewer
+from core.utils import *
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -34,6 +35,7 @@ class MainWindow(QMainWindow):
         self.current_selection = None
         self.video_input_path = ""
         self.video_output_path = ""
+        self.current_mode  = "bbox"
 
         self.setWindowTitle("Florence-2 GUI")
         self.setMinimumSize(1400, 900)
@@ -67,10 +69,10 @@ class MainWindow(QMainWindow):
             self.model_combo.addItem(model_name)       
         
         self.attention_combo = QComboBox()
-        self.attention_combo.addItems(["sdpa", "eager"]) #TODO: install flash_attn
+        self.attention_combo.addItems(["eager", "sdpa"]) #TODO: install flash_attn
         
         self.precision_combo = QComboBox()
-        self.precision_combo.addItems(["fp32", "fp16", "bf16"])
+        self.precision_combo.addItems(["fp16", "fp32", "bf16"])
         
         self.load_model_btn = QPushButton("Load Model")
         self.load_model_btn.setMaximumHeight(28)
@@ -298,6 +300,105 @@ class MainWindow(QMainWindow):
         
         right_panel.addLayout(button_layout)
 
+        # 6. Selection Mode group
+        mode_group = QGroupBox("Selection Mode")
+        mode_layout = QVBoxLayout()
+        mode_layout.setSpacing(8)
+        
+        mode_radio_layout = QHBoxLayout()
+        mode_radio_layout.setSpacing(90)
+
+        self.mode_bbox = QRadioButton("🟦 BBox")
+        self.mode_bbox.setChecked(True)
+        self.mode_bbox.setStyleSheet("""
+            QRadioButton {
+                font-weight: bold;
+                padding: 6px 10px;
+                font-size: 11px;
+                color: #2E7D32;
+                background-color: #E8F5E9;
+                border: 1px solid #C8E6C9;
+                border-radius: 6px;
+            }
+            QRadioButton:hover {
+                background-color: #C8E6C9;
+            }
+            QRadioButton::indicator {
+                width: 14px;
+                height: 14px;
+                margin-right: 4px;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #4CAF50;
+                border: 2px solid #388E3C;
+                border-radius: 7px;
+            }
+            QRadioButton::indicator:unchecked {
+                background-color: #FFFFFF;
+                border: 1px solid #81C784;
+                border-radius: 7px;
+            }
+        """)
+
+        self.mode_crop = QRadioButton("✂️ Crop")
+        self.mode_crop.setStyleSheet("""
+            QRadioButton {
+                font-weight: bold;
+                padding: 6px 10px;
+                font-size: 11px;
+                color: #1565C0;
+                background-color: #E3F2FD;
+                border: 1px solid #BBDEFB;
+                border-radius: 6px;
+            }
+            QRadioButton:hover {
+                background-color: #BBDEFB;
+            }
+            QRadioButton::indicator {
+                width: 14px;
+                height: 14px;
+                margin-right: 4px;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #2196F3;
+                border: 2px solid #1976D2;
+                border-radius: 7px;
+            }
+            QRadioButton::indicator:unchecked {
+                background-color: #FFFFFF;
+                border: 1px solid #64B5F6;
+                border-radius: 7px;
+            }
+        """)
+
+        mode_radio_layout.addWidget(self.mode_bbox)
+        mode_radio_layout.addWidget(self.mode_crop)
+        mode_radio_layout.addStretch()
+
+        self.mode_group = QButtonGroup()
+        self.mode_group.addButton(self.mode_bbox)
+        self.mode_group.addButton(self.mode_crop)
+        
+        mode_layout.addLayout(mode_radio_layout)
+
+        self.mode_info = QLabel("BBox Mode: Process entire image with focus on selected region")
+        self.mode_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mode_info.setStyleSheet("""
+            QLabel {
+                font-size: 10px;
+                color: #666;
+                padding: 8px;
+                background-color: #e8f5e8;
+                border-radius: 4px;
+                border: 1px solid #4CAF50;
+            }
+        """)
+        self.mode_info.setWordWrap(True)
+        mode_layout.addWidget(self.mode_info)
+
+        mode_group.setLayout(mode_layout)
+        left_panel.addWidget(mode_group)
+        
         # Connect signals
         self.load_model_btn.clicked.connect(self.start_model_loading)
         self.upload_btn.clicked.connect(self.upload_image)
@@ -307,7 +408,8 @@ class MainWindow(QMainWindow):
         self.video_input_btn.clicked.connect(self.select_video_file)
         self.process_video_btn.clicked.connect(self.start_video_processing)
         self.clear_selection_btn.clicked.connect(self.clear_selection)
-
+        self.mode_bbox.toggled.connect(self.on_mode_changed)
+        self.mode_crop.toggled.connect(self.on_mode_changed)
 
     def start_model_loading(self):
         if self.model_loader and self.model_loader.isRunning():
@@ -356,7 +458,6 @@ class MainWindow(QMainWindow):
         self.log_message("Model successfully loaded!")
         self.load_model_btn.setEnabled(True)
         self.load_model_btn.setText("Load Model")
-        # self.model_loader = None
 
     def on_model_error(self, error_msg):
         self.log_message(error_msg)
@@ -409,11 +510,8 @@ class MainWindow(QMainWindow):
                 self.upload_info.setText(f"Loaded: {w}x{h} px")
                 self.log_message(f"Image loaded: {fname} ({w}x{h} px)")
                 
-                self.current_selection = None
-
                 self.clear_selection()
-                self.cropped_image = None
-
+                self.img_width, self.img_height = self.image_pil.size
             else:
                 self.log_message("Error: Failed to load image")
 
@@ -435,7 +533,7 @@ class MainWindow(QMainWindow):
         selected_category = self.category_combo.currentText()
         task_tag = TASK_TAGS.get(selected_category, "<CAPTION>")
         
-        if self.current_selection:
+        if self.current_selection and self.current_mode == "crop":
             x1, y1, x2, y2 = self.current_selection
             self.cropped_image = None
             self.cropped_image = self.image_pil.crop((x1, y1, x2, y2))
@@ -449,7 +547,7 @@ class MainWindow(QMainWindow):
         self.log_message("\n=== Starting Processing ===")
         self.log_message(f"Task: {selected_category}")
         self.log_message(f"Prompt: {prompt}")
-        if self.current_selection:
+        if self.current_selection and self.current_mode == "crop":
             self.log_message(f"Region: {self.current_selection}")
             self.processing_image = self.cropped_image
         else:
@@ -786,15 +884,19 @@ class MainWindow(QMainWindow):
             self.video_progress.setValue(0)
 
     def on_image_selection(self, x1, y1, x2, y2):
-        """Handle rectangle selection on input image"""
         if x1 == x2 and y1 == y2:
             return
         
         x1, x2 = min(x1, x2), max(x1, x2)
         y1, y2 = min(y1, y2), max(y1, y2)
-        
-        selection_info = f"Selected area: [{x1}, {y1}, {x2}, {y2}] (W: {x2-x1}, H: {y2-y1})"
+        if self.current_mode == "bbox":
+            locs = normalize_bbox_coordinates(x1, y1, x2, y2, self.img_width, self.img_height)
+            selection_info = f"🟦 BBox: <loc_{locs[0]}><loc_{locs[1]}><loc_{locs[2]}><loc_{locs[3]}>"
+            self.log_message(f"\n{selection_info}")
+            return
+        selection_info = f"✂️ Cropped area: [{x1}, {y1}, {x2}, {y2}] (W: {x2-x1}, H: {y2-y1})"
         self.log_message(f"\n{selection_info}")
+
 
         self.current_selection = (x1, y1, x2, y2)
 
@@ -803,3 +905,37 @@ class MainWindow(QMainWindow):
         self.current_selection = None
         self.cropped_image = None
         self.log_message("\nSelection cleared")
+
+    def on_mode_changed(self, checked):
+        if not checked:
+            return 
+                
+        if self.mode_bbox.isChecked():
+            self.current_mode = "bbox"
+            self.mode_info.setText("BBox Mode: Process entire image with focus on selected region")
+            self.mode_info.setStyleSheet("""
+                QLabel {
+                    font-size: 10px;
+                    color: #666;
+                    padding: 8px;
+                    background-color: #e8f5e8;
+                    border-radius: 4px;
+                    border: 1px solid #4CAF50;
+                }
+            """)
+        elif self.mode_crop.isChecked():
+            self.current_mode = "crop"
+            self.mode_info.setText("Crop Mode: Process only the cropped selected region")
+            self.mode_info.setStyleSheet("""
+                QLabel {
+                    font-size: 10px;
+                    color: #666;
+                    padding: 8px;
+                    background-color: #e3f2fd;
+                    border-radius: 4px;
+                    border: 1px solid #2196F3;
+                }
+            """)
+        
+        self.log_message(f"\n🔧 Mode changed to: {self.current_mode.upper()}")
+        self.clear_selection()
