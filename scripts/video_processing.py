@@ -21,6 +21,7 @@ class BatchVideoProcessor:
             trust_remote_code=True,
             attn_implementation="eager"
         )
+
         self.model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME,
             torch_dtype=self.torch_dtype,

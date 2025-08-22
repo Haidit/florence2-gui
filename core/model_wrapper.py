@@ -59,14 +59,14 @@ class Florence2ModelWrapper:
                     image_size=image_pil.size
                 )
                 
-                mask_img = self._create_mask_image(processed_results, image_pil.size)
+                # mask_img = self._create_mask_image(processed_results, image_pil.size)
                 
                 return {
                     'text': generated_text,
                     'task_tag': task_tag,
                     'is_visual_task': True,
                     'processed_results': processed_results,
-                    'mask_image': mask_img,
+                    # 'mask_image': mask_img,
                     'success': True
                 }
             return {
@@ -112,3 +112,4 @@ class Florence2ModelWrapper:
                     continue
         
         return mask
+    

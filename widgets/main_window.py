@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 import numpy as np
 import os
 
-from config import LOCAL_MODELS, TASK_TAGS
+from config import LOCAL_MODELS, TASK_TAGS, VISUAL_TASKS
 from core.model_wrapper import Florence2ModelWrapper
 from core.video_processor import BatchVideoProcessor
 from threads.model_loader import ModelLoaderThread
@@ -825,6 +825,11 @@ class MainWindow(QMainWindow):
         if not self.video_input_path:
             return
             
+        task_tag = TASK_TAGS.get(self.category_combo.currentText(), "<OD>")
+        if task_tag not in VISUAL_TASKS:
+            self.log_message(f"\nChoose from {', '.join(VISUAL_TASKS.values())}")
+            return
+            
         output_path, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить обработанное видео",
@@ -838,7 +843,6 @@ class MainWindow(QMainWindow):
         batch_size = self.batch_size_spin.value()
         frame_skip = self.frame_skip_spin.value()
         generation_params = self.generation_params.get_params()
-        task_tag = TASK_TAGS.get(self.category_combo.currentText(), "<CAPTION>")
         prompt = self.prompt_input.text()
         
         self.video_processor = BatchVideoProcessor(self.florence_model)
