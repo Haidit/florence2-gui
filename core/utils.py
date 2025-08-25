@@ -104,3 +104,4 @@ def image_to_qimage(pil_image: Image.Image) -> QImage:
     qimage.loadFromData(buffer.getvalue())
     
     return qimage
+    

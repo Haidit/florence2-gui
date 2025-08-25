@@ -505,9 +505,9 @@ class MainWindow(QMainWindow):
                 
                 self.original_image_for_processing = self.image_pil.copy()
                 
-                display_image = ensure_proper_image(self.image_pil)
+                self.display_image = ensure_proper_image(self.image_pil)
                 
-                self.input_image.set_image(display_image)
+                self.input_image.set_image(self.display_image)
                 
                 self.img_width, self.img_height = self.image_pil.size
                 self.upload_info.setText(f"Loaded: {self.img_width}x{self.img_height} px")
@@ -541,7 +541,7 @@ class MainWindow(QMainWindow):
         if self.current_selection and self.current_mode == "crop":
             x1, y1, x2, y2 = self.current_selection
             self.cropped_image = None
-            self.cropped_image = self.image_pil.crop((x1, y1, x2, y2))
+            self.cropped_image = self.display_image.crop((x1, y1, x2, y2))
             self.log_message(f"\nProcessing cropped region: {x1}, {y1}, {x2}, {y2}")
         
         self.run_btn.setEnabled(False)
@@ -556,7 +556,7 @@ class MainWindow(QMainWindow):
             self.log_message(f"Region: {self.current_selection}")
             self.processing_image = self.cropped_image
         else:
-            self.processing_image = self.image_pil
+            self.processing_image = self.display_image
 
         self.processing_thread = ProcessingThread(
             model_wrapper=self.florence_model,
