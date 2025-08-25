@@ -1,4 +1,9 @@
 from typing import Tuple, List, Union
+import PIL.Image
+import PIL.ExifTags
+from PIL import Image, ImageOps
+import io
+from PyQt6.QtGui import QImage
 
 def normalize_bbox_coordinates(x1, y1, x2, y2, 
                               image_width: int, 
@@ -32,3 +37,70 @@ def denormalize_bbox_coordinates(bbox_norm: Union[Tuple[float, float, float, flo
     y2 = int((y2_norm / 998) * image_height)
     
     return x1, y1, x2, y2
+
+def fix_image_orientation(image: Image.Image) -> Image.Image:
+    try:
+        exif = image._getexif()
+        if exif is None:
+            return image.convert('RGB')
+        
+        exif_dict = {
+            PIL.ExifTags.TAGS[k]: v 
+            for k, v in exif.items() 
+            if k in PIL.ExifTags.TAGS
+        }
+        
+        orientation = exif_dict.get('Orientation')
+        if orientation is None:
+            return image.convert('RGB')
+        
+        if orientation == 2:
+            image = ImageOps.mirror(image)
+        elif orientation == 3:
+            image = image.rotate(180, expand=True)
+        elif orientation == 4:
+            image = ImageOps.flip(image)
+        elif orientation == 5:
+            image = ImageOps.mirror(image.rotate(-90, expand=True))
+        elif orientation == 6:
+            image = image.rotate(-90, expand=True)
+        elif orientation == 7:
+            image = ImageOps.mirror(image.rotate(90, expand=True))
+        elif orientation == 8:
+            image = image.rotate(90, expand=True)
+            
+    except (AttributeError, KeyError, IndexError, Exception):
+        pass
+    
+    return image.convert('RGB')
+
+def fix_image_colorspace(image: Image.Image) -> Image.Image:
+
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+    
+    if image.mode == 'RGBA':
+        background = Image.new('RGB', image.size, (255, 255, 255))
+        background.paste(image, mask=image.split()[3])
+        image = background
+
+    return image
+
+def ensure_proper_image(image: Image.Image) -> Image.Image:
+
+    image = fix_image_orientation(image)
+    
+    image = fix_image_colorspace(image)
+    
+    return image
+
+def image_to_qimage(pil_image: Image.Image) -> QImage:
+    
+    buffer = io.BytesIO()
+    pil_image.save(buffer, format="PNG")
+    buffer.seek(0)
+    
+    qimage = QImage()
+    qimage.loadFromData(buffer.getvalue())
+    
+    return qimage

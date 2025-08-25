@@ -496,24 +496,29 @@ class MainWindow(QMainWindow):
             self, 
             "Open Image", 
             "", 
-            "Images (*.png *.jpg *.jpeg *.bmp)"
+            "Images (*.png *.jpg *.jpeg *.bmp *.tiff *.webp *.heic)"
         )
         
         if fname:
-            img_cv2 = cv2.imread(fname)
-            if img_cv2 is not None:
-                img_cv2 = cv2.cvtColor(img_cv2, cv2.COLOR_BGR2RGB)
-                self.image_pil = Image.fromarray(img_cv2)
-                h, w, _ = img_cv2.shape
+            try:
+                self.image_pil = Image.open(fname)
                 
-                self.input_image.set_image(self.image_pil)
-                self.upload_info.setText(f"Loaded: {w}x{h} px")
-                self.log_message(f"Image loaded: {fname} ({w}x{h} px)")
+                self.original_image_for_processing = self.image_pil.copy()
+                
+                display_image = ensure_proper_image(self.image_pil)
+                
+                self.input_image.set_image(display_image)
+                
+                self.img_width, self.img_height = self.image_pil.size
+                self.upload_info.setText(f"Loaded: {self.img_width}x{self.img_height} px")
+                self.log_message(f"Image loaded: {fname} ({self.img_width}x{self.img_height} px)")
                 
                 self.clear_selection()
-                self.img_width, self.img_height = self.image_pil.size
-            else:
-                self.log_message("Error: Failed to load image")
+                
+                
+            except Exception as e:
+                self.log_message(f"Error loading image: {str(e)}")
+                self.image_pil = None
 
     def run_processing(self):
         if not self.florence_model:
@@ -675,10 +680,9 @@ class MainWindow(QMainWindow):
         return Image.fromarray(cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB))
     
     def _display_pil_image(self, pil_img, qlabel):
-        img = pil_img.convert("RGB")
-        data = img.tobytes("raw", "RGB")
-        q_img = QImage(data, img.size[0], img.size[1], QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(q_img)
+        display_image = ensure_proper_image(pil_img)
+        qimage = image_to_qimage(display_image)
+        pixmap = QPixmap.fromImage(qimage)
         
         scaled_pixmap = pixmap.scaled(
             qlabel.size(),

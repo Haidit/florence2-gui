@@ -3,6 +3,8 @@ from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QMouseEvent, QColor, QF
 from PyQt6.QtCore import Qt, QRect, pyqtSignal
 import numpy as np
 from PIL import Image
+from core.utils import ensure_proper_image, image_to_qimage
+
 
 class ImageViewer(QLabel):
     """QLabel with rectangle selection functionality"""
@@ -32,18 +34,17 @@ class ImageViewer(QLabel):
         """)
         self.setCursor(Qt.CursorShape.CrossCursor)
     
-    def set_image(self, pil_image):
+    def set_image(self, display_image):
         """Set PIL image and display it"""
-        if pil_image is None:
+        if display_image is None:
             return
             
-        self.original_image = pil_image
-        self.original_size = QRect(0, 0, pil_image.width, pil_image.height)
+        self.original_image = display_image
         
-        img = pil_image.convert("RGB")
-        data = img.tobytes("raw", "RGB")
-        q_img = QImage(data, img.size[0], img.size[1], QImage.Format.Format_RGB888)
-        self.original_pixmap = QPixmap.fromImage(q_img)
+        self.original_size = QRect(0, 0, display_image.width, display_image.height)
+        qimage = image_to_qimage(display_image)
+        
+        self.original_pixmap = QPixmap.fromImage(qimage)
         
         self.selection_coords = None
         self.calculate_display_geometry()
