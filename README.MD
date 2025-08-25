@@ -1,4 +1,4 @@
-# Florence-2 GUI (Русский)
+# Florence-2 GUI
 
 ## ✨ Возможности
 
